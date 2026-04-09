@@ -1,0 +1,112 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       dbname
+      POSTGRES_USER:     dbuser
+      POSTGRES_PASSWORD: dbpass
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbuser -d dbname"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  laravel:
+    build:
+      context: ./laravel
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      APP_ENV:          local
+      APP_KEY:          base64:1234
+      DB_CONNECTION:    pgsql
+      DB_HOST:          postgres
+      DB_PORT:          5432
+      DB_DATABASE:      dbname
+      DB_USERNAME:      dbuser
+      DB_PASSWORD:      dbpass
+      QUEUE_CONNECTION: redis
+      REDIS_HOST:       redis
+      KERNEL_URL:       http://fastapi:9002
+      KERNEL_SECRET:    1234
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./laravel:/var/www/html
+
+  laravel-worker:
+    build:
+      context: ./laravel
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - laravel
+    command: php artisan queue:work --queue=streaming --tries=2 --timeout=120
+    environment:
+      APP_ENV:          local
+      APP_KEY:          base64:1234
+      DB_CONNECTION:    pgsql
+      DB_HOST:          postgres
+      DB_PORT:          5432
+      DB_DATABASE:      dbname
+      DB_USERNAME:      dbuser
+      DB_PASSWORD:      dbpass
+      QUEUE_CONNECTION: redis
+      REDIS_HOST:       redis
+      KERNEL_URL:       http://fastapi:9002
+      KERNEL_SECRET:    1234
+    volumes:
+      - ./laravel:/var/www/html
+
+  fastapi:
+    build:
+      context: ./fastapi
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      APP_ENV:               local
+      PYTHON_KERNEL_SECRET:  1234
+      DEEPSEEK_API_KEY:      ${DEEPSEEK_API_KEY}
+      DEEPSEEK_BASE_URL:     https://api.deepseek.com/v1
+      KERNEL_ALLOWED_ORIGINS: http://laravel:8000,http://localhost:8000
+    ports:
+      - "9002:9002"
+
+  vue:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ./vue:/app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+    ports:
+      - "5173:5173"
+    depends_on:
+      - laravel
+
+volumes:
+  postgres_data:
